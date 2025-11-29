@@ -1,0 +1,12 @@
+# Pobranie danych z Kaggle (wymagane Kaggle API)
+mkdir -p data
+cd data
+kaggle datasets download -d elemento/nyc-yellow-taxi-trip-data
+unzip nyc-yellow-taxi-trip-data.zip
+cd ..
+
+# Uruchomienie kontenerów
+docker-compose up -d
+
+# Sprawdzenie logów
+docker-compose logs -f jupyter
