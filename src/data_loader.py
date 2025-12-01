@@ -9,9 +9,18 @@ from pyspark.sql.types import (
 )
 from datetime import datetime
 import sys
-sys.path.append('/home/jovyan/work')
+import os
 
-from config.spark_config import SPARK_CONFIG, DATA_PATHS
+# Ścieżki do modułów
+sys.path.append('/home/jovyan')
+sys.path.append('/home/jovyan/src')
+sys.path.append('/home/jovyan/config')
+
+try:
+    from config.spark_config import SPARK_CONFIG, DATA_PATHS
+except ImportError:
+    sys.path.append('..')
+    from config.spark_config import SPARK_CONFIG, DATA_PATHS
 
 
 class DataLoader:
@@ -29,19 +38,30 @@ class DataLoader:
         
     def _create_spark_session(self) -> SparkSession:
         """Tworzy skonfigurowaną sesję Spark"""
+        print("Tworzenie sesji Spark...")
+        
+        # Stop existing session if any
+        existing_spark = SparkSession.getActiveSession()
+        if existing_spark:
+            print("Zatrzymywanie istniejącej sesji Spark...")
+            existing_spark.stop()
+        
+        # Build new session
         builder = SparkSession.builder.appName(SPARK_CONFIG["app_name"])
         
-        # Dodanie konfiguracji
+        # Apply all configurations
         for key, value in SPARK_CONFIG.items():
-            if key not in ["app_name", "master"]:
-                builder = builder.config(key, value)
+            if key not in ["app_name"]:
+                builder = builder.config(key, str(value))
         
-        # Master URL
-        if "master" in SPARK_CONFIG:
-            builder = builder.master(SPARK_CONFIG["master"])
-            
         spark = builder.getOrCreate()
         spark.sparkContext.setLogLevel("WARN")
+        
+        # Test connection
+        print(f"Spark UI: http://localhost:4040")
+        print(f"Master: {spark.sparkContext.master}")
+        print(f"Spark Version: {spark.version}")
+        print(f"Python Version: {sys.version}")
         
         return spark
     
@@ -74,42 +94,61 @@ class DataLoader:
         Wczytuje dane z plików CSV
         
         Args:
-            path: Ścieżka do plików CSV (domyślnie z konfiguracji)
-            num_partitions: Liczba partycji do repartycjonowania
+            path: Ścieżka do danych (opcjonalne)
+            num_partitions: Liczba partycji do przetwarzania
             
         Returns:
             DataFrame: Wczytane dane
         """
         data_path = path or DATA_PATHS["raw_data"]
+
+        print(f"\nWczytywanie danych z: {data_path}")
         
-        print(f"Wczytywanie danych z: {data_path}")
+        # Check if files exist
+        import glob
+        files = glob.glob(data_path.replace('/home/jovyan/', './'))
+        if not files:
+            print(f"⚠️  UWAGA: Nie znaleziono plików pasujących do wzorca: {data_path}")
+            print("Upewnij się, że pliki CSV znajdują się w folderze 'data/'")
+        else:
+            print(f"✓ Znaleziono {len(files)} plików")
+        
         start_time = datetime.now()
         
-        df = self.spark.read.csv(
-            data_path,
-            header=True,
-            schema=self.schema,
-            mode="DROPMALFORMED"
-        )
-        
-        # Repartycjonowanie
-        df = df.repartition(num_partitions)
-        
-        load_time = (datetime.now() - start_time).total_seconds()
-        print(f"Czas wczytywania: {load_time:.2f} sekund")
-        
-        return df
+        try:
+            df = self.spark.read.csv(
+                data_path,
+                header=True,
+                schema=self.schema,
+                mode="DROPMALFORMED"
+            )
+            
+            # Force evaluation to catch errors early
+            count = df.count()
+            
+            if count == 0: 
+                print("⚠️  UWAGA: Wczytany DataFrame jest pusty!")
+                return df
+            
+            # Repartition for better parallelism
+            df = df.repartition(num_partitions)
+            
+            load_time = (datetime.now() - start_time).total_seconds()
+            print(f"✓ Wczytano {count:,} rekordów w {load_time:.2f} sekund")
+            
+            return df
+            
+        except Exception as e:
+            print(f"\n❌ BŁĄD podczas wczytywania pliku:")
+            print(f"   {str(e)}")
+            print("\nSprawdź:")
+            print("  1. Czy pliki CSV są w folderze 'data/'")
+            print("  2. Czy Spark workers są uruchomione (docker ps)")
+            print("  3. Czy wersje Spark są zgodne we wszystkich kontenerach")
+            raise e
     
     def get_data_info(self, df) -> dict:
-        """
-        Zwraca podstawowe informacje o zbiorze danych
-        
-        Args:
-            df: DataFrame do analizy
-            
-        Returns:
-            dict: Słownik z informacjami
-        """
+        """Pobiera informacje o DataFrame"""
         info = {
             "record_count": df.count(),
             "column_count": len(df.columns),
@@ -120,7 +159,7 @@ class DataLoader:
         return info
     
     def print_data_info(self, df):
-        """Wyświetla informacje o danych"""
+        """Wyświetla informacje o DataFrame"""
         info = self.get_data_info(df)
         
         print("\n" + "=" * 70)
@@ -132,3 +171,4 @@ class DataLoader:
         print("\nKolumny:")
         for col in info['columns']:
             print(f"  - {col}")
+        print("=" * 70)

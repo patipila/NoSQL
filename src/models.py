@@ -4,7 +4,7 @@ Moduł do treningu i ewaluacji modeli ML
 
 from pyspark.sql import DataFrame
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer
-from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.classification import GBTClassifier
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.evaluation import (
     BinaryClassificationEvaluator,
@@ -76,7 +76,7 @@ class ModelTrainer:
         self.assembler_inputs = assembler_inputs
         return stages
     
-    def train_random_forest(
+    def train_gbt_classifier(
         self,
         train_data: DataFrame,
         test_data: DataFrame,
@@ -84,7 +84,7 @@ class ModelTrainer:
         label_col: str = "high_tip"
     ) -> dict:
         """
-        Trenuje model Random Forest
+        Trenuje model GBT Classifier (Gradient Boosted Tree)
         
         Args:
             train_data: Dane treningowe
@@ -96,23 +96,26 @@ class ModelTrainer:
             dict: Wyniki modelu
         """
         print("\n" + "=" * 70)
-        print("TRENING MODELU: RANDOM FOREST")
+        print("TRENING MODELU: GBT CLASSIFIER")
         print("=" * 70)
         
-        # Konfiguracja modelu
-        rf_config = ML_CONFIG["random_forest"]
-        rf = RandomForestClassifier(
+        # Konfiguracja modelu - zakładam, że konfiguracja dla GBT jest dostępna w ML_CONFIG
+        # Jeśli nie, można użyć domyślnych wartości lub dodać do configu
+        gbt_config = ML_CONFIG.get("gbt_classifier", {}) 
+        
+        # Inicjalizacja GBTClassifier
+        # Możesz dostosować hiperparametry (maxIter, maxDepth itp.) 
+        # w zależności od potrzeb lub pobrać je z configu
+        gbt = GBTClassifier(
             labelCol=label_col,
             featuresCol="features",
-            numTrees=rf_config["numTrees"],
-            maxDepth=rf_config["maxDepth"],
-            maxBins=rf_config["maxBins"],
-            seed=rf_config["seed"],
-            featureSubsetStrategy=rf_config["featureSubsetStrategy"]
+            maxIter=gbt_config.get("maxIter", 20), # Domyślnie 20 iteracji
+            maxDepth=gbt_config.get("maxDepth", 5), # Domyślna głębokość 5
+            seed=gbt_config.get("seed", 42) # Domyślny seed
         )
         
         # Pipeline
-        pipeline = Pipeline(stages=preprocessing_stages + [rf])
+        pipeline = Pipeline(stages=preprocessing_stages + [gbt])
         
         # Trening
         print("Trening modelu...")
@@ -130,19 +133,19 @@ class ModelTrainer:
         metrics["training_time"] = train_time
         
         # Feature importance
-        rf_model = model.stages[-1]
-        importance = rf_model.featureImportances.toArray()
+        gbt_model = model.stages[-1]
+        importance = gbt_model.featureImportances.toArray()
         importance_df = pd.DataFrame({
             'feature': self.assembler_inputs,
             'importance': importance
         }).sort_values('importance', ascending=False)
         
         # Zapisanie wyników
-        self.models["random_forest"] = model
-        self.metrics["random_forest"] = metrics
-        self.feature_importance["random_forest"] = importance_df
+        self.models["gbt_classifier"] = model
+        self.metrics["gbt_classifier"] = metrics
+        self.feature_importance["gbt_classifier"] = importance_df
         
-        self._print_classification_metrics("Random Forest", metrics)
+        self._print_classification_metrics("GBT Classifier", metrics)
         
         return {
             "model": model,
@@ -295,14 +298,14 @@ class ModelTrainer:
         """Zwraca podsumowanie wszystkich modeli"""
         summary_data = []
         
-        if "random_forest" in self.metrics:
-            rf = self.metrics["random_forest"]
+        if "gbt_classifier" in self.metrics:
+            gbt = self.metrics["gbt_classifier"]
             summary_data.append({
-                'Model': 'Random Forest',
+                'Model': 'GBT Classifier',
                 'Zadanie': 'Klasyfikacja',
-                'Główna metryka': f"AUC: {rf['auc_roc']:.4f}",
-                'Dodatkowe': f"Acc: {rf['accuracy']:.4f}, F1: {rf['f1_score']:.4f}",
-                'Czas (s)': f"{rf['training_time']:.2f}"
+                'Główna metryka': f"AUC: {gbt['auc_roc']:.4f}",
+                'Dodatkowe': f"Acc: {gbt['accuracy']:.4f}, F1: {gbt['f1_score']:.4f}",
+                'Czas (s)': f"{gbt['training_time']:.2f}"
             })
         
         if "linear_regression" in self.metrics:
